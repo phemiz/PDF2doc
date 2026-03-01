@@ -112,7 +112,12 @@ export class StyleMapper {
 
 export class ConversionEngine {
   private static getAI() {
-    return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    // Vite replaces process.env.GEMINI_API_KEY at build time based on vite.config.ts
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error("GEMINI_API_KEY is not set. Please add GEMINI_API_KEY to your environment variables.");
+    }
+    return new GoogleGenAI({ apiKey });
   }
 
   static async isPasswordProtected(file: File): Promise<boolean> {

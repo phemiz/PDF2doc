@@ -23,7 +23,8 @@ import {
   Maximize2,
   Smartphone,
   Monitor,
-  ArrowRight
+  ArrowRight,
+  RefreshCw
 } from 'lucide-react';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
@@ -39,7 +40,7 @@ function cn(...inputs: ClassValue[]) {
 export default function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [filePreviewUrls, setFilePreviewUrls] = useState<Record<string, string>>({});
-  const [mode, setMode] = useState<ConversionMode>(ConversionMode.OFFLINE);
+  const [mode, setMode] = useState<ConversionMode>(ConversionMode.ONLINE);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -65,9 +66,11 @@ export default function App() {
   const [replaceTerm, setReplaceTerm] = useState('');
   const [fileSettings, setFileSettings] = useState<Record<string, any>>({});
   
-  const [autoConvert, setAutoConvert] = useState(true);
+  const [autoConvert, setAutoConvert] = useState(false);
   const [isPro, setIsPro] = useState(false);
+  const [showProModal, setShowProModal] = useState(false);
   const [googleTokens, setGoogleTokens] = useState<any>(null);
+  const [googleUser, setGoogleUser] = useState<any>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -96,6 +99,15 @@ export default function App() {
         console.error('Failed to parse stored Google tokens');
       }
     }
+    
+    const storedUser = localStorage.getItem('google_user');
+    if (storedUser) {
+      try {
+        setGoogleUser(JSON.parse(storedUser));
+      } catch (e) {
+        console.error('Failed to parse stored Google user');
+      }
+    }
 
     const handleMessage = (event: MessageEvent) => {
       if (!event.origin.endsWith('.run.app') && !event.origin.includes('localhost')) {
@@ -103,9 +115,14 @@ export default function App() {
       }
       if (event.data?.type === 'GOOGLE_AUTH_SUCCESS') {
         const tokens = event.data.tokens;
+        const user = event.data.user;
         setGoogleTokens(tokens);
+        setGoogleUser(user);
         localStorage.setItem('google_tokens', JSON.stringify(tokens));
-        alert('Successfully connected to Google Drive!');
+        if (user) {
+          localStorage.setItem('google_user', JSON.stringify(user));
+        }
+        alert('Successfully connected to Google account!');
       }
     };
     window.addEventListener('message', handleMessage);
@@ -288,16 +305,40 @@ export default function App() {
     }
   };
 
+  const handleGoogleLogin = async () => {
+    try {
+      const response = await fetch('/api/auth/google/url');
+      const data = await response.json();
+      if (data.url) {
+        window.open(data.url, 'google_oauth_popup', 'width=600,height=700');
+      } else {
+        alert('Failed to get Google Auth URL');
+      }
+    } catch (error) {
+      console.error('Error getting Google Auth URL:', error);
+    }
+  };
+
   const handleUpgrade = async () => {
+    let email = googleUser?.email;
+    if (!email) {
+      email = prompt("Please enter your email to proceed to payment:", "");
+      if (!email) return;
+    }
+
     try {
       const response = await fetch('/api/create-checkout-session', {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email }),
       });
       const data = await response.json();
       if (data.url) {
         window.location.href = data.url;
       } else {
-        alert('Failed to create checkout session.');
+        alert(data.error || 'Failed to create checkout session.');
       }
     } catch (error) {
       console.error('Error upgrading:', error);
@@ -702,10 +743,24 @@ export default function App() {
                 {/* Controls Sidebar */}
                 <div className="space-y-6">
                   <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm space-y-6">
-                    <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                      <Settings size={20} className="text-blue-600" />
-                      Settings
-                    </h3>
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                        <Settings size={20} className="text-blue-600" />
+                        Settings
+                      </h3>
+                      <button
+                        onClick={() => {
+                          setMode(ConversionMode.ONLINE);
+                          setAutoConvert(false);
+                          setOcrEnabled(false);
+                          setEmbedFonts(false);
+                        }}
+                        className="text-xs font-bold uppercase tracking-widest text-slate-500 hover:text-blue-600 flex items-center gap-1 transition-colors bg-slate-100 hover:bg-blue-50 px-3 py-1.5 rounded-lg"
+                      >
+                        <RefreshCw size={14} />
+                        Set to Default
+                      </button>
+                    </div>
                     
                     <div className="space-y-4">
                       <div className="p-4 md:p-5 bg-slate-50 rounded-2xl space-y-5">
@@ -884,13 +939,38 @@ export default function App() {
                       <p className="text-sm font-medium leading-relaxed opacity-80">
                         Unlock batch processing and cloud sync by upgrading to PDF2doc Pro.
                       </p>
-                      <button 
-                        onClick={handleUpgrade}
-                        aria-label="Learn more about PDF2doc Pro"
-                        className="text-xs font-bold uppercase tracking-widest bg-white/10 hover:bg-white/20 px-4 py-2 rounded-lg transition-colors"
-                      >
-                        Learn More
-                      </button>
+                      <div className="flex flex-wrap gap-3">
+                        {!googleUser ? (
+                          <button 
+                            onClick={handleGoogleLogin}
+                            aria-label="Login with Google"
+                            className="text-xs font-bold uppercase tracking-widest bg-white text-deep-blue hover:bg-slate-100 px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+                          >
+                            <svg className="w-4 h-4" viewBox="0 0 24 24">
+                              <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                            </svg>
+                            Login to Upgrade
+                          </button>
+                        ) : (
+                          <button 
+                            onClick={handleUpgrade}
+                            aria-label="Upgrade to PDF2doc Pro"
+                            className="text-xs font-bold uppercase tracking-widest bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+                          >
+                            Upgrade Now
+                          </button>
+                        )}
+                        <button 
+                          onClick={() => setShowProModal(true)}
+                          aria-label="Learn more about PDF2doc Pro"
+                          className="text-xs font-bold uppercase tracking-widest bg-white/10 hover:bg-white/20 px-4 py-2 rounded-lg transition-colors"
+                        >
+                          Learn More
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <div className="bg-emerald-900/40 border border-emerald-500/20 rounded-3xl p-6 text-emerald-100 space-y-2 relative overflow-hidden">
@@ -1145,6 +1225,99 @@ export default function App() {
           )}
         </AnimatePresence>
       </main>
+
+      {/* Pro Modal */}
+      <AnimatePresence>
+        {showProModal && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowProModal(false)}
+              className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-3xl z-50 shadow-2xl p-8 max-w-md w-full mx-4"
+            >
+              <div className="flex justify-between items-start mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center">
+                    <Zap className="text-blue-600" size={24} />
+                  </div>
+                  <div>
+                    <h2 className="text-2xl font-bold text-slate-900">PDF2doc Pro</h2>
+                    <p className="text-sm font-medium text-slate-500">Unlock advanced features</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setShowProModal(false)}
+                  className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+                >
+                  <X size={20} className="text-slate-400" />
+                </button>
+              </div>
+
+              <div className="space-y-4 mb-8">
+                <div className="flex items-start gap-3 p-4 bg-slate-50 rounded-2xl">
+                  <CheckCircle2 className="text-emerald-500 shrink-0 mt-0.5" size={20} />
+                  <div>
+                    <h4 className="font-bold text-slate-900">Batch Processing</h4>
+                    <p className="text-sm text-slate-500">Convert multiple PDFs at once, saving you hours of manual work.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-4 bg-slate-50 rounded-2xl">
+                  <CheckCircle2 className="text-emerald-500 shrink-0 mt-0.5" size={20} />
+                  <div>
+                    <h4 className="font-bold text-slate-900">Cloud Sync</h4>
+                    <p className="text-sm text-slate-500">Automatically save your converted documents to Google Drive.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-4 bg-slate-50 rounded-2xl">
+                  <CheckCircle2 className="text-emerald-500 shrink-0 mt-0.5" size={20} />
+                  <div>
+                    <h4 className="font-bold text-slate-900">Priority Processing</h4>
+                    <p className="text-sm text-slate-500">Get faster conversions with dedicated server resources.</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                {!googleUser ? (
+                  <button 
+                    onClick={() => {
+                      setShowProModal(false);
+                      handleGoogleLogin();
+                    }}
+                    className="w-full bg-white border-2 border-slate-200 text-slate-700 py-4 rounded-2xl font-bold uppercase tracking-widest text-sm flex items-center justify-center gap-3 hover:bg-slate-50 transition-all"
+                  >
+                    <svg className="w-5 h-5" viewBox="0 0 24 24">
+                      <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                    </svg>
+                    Login to Upgrade
+                  </button>
+                ) : (
+                  <button 
+                    onClick={() => {
+                      setShowProModal(false);
+                      handleUpgrade();
+                    }}
+                    className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold uppercase tracking-widest text-sm flex items-center justify-center gap-3 hover:bg-blue-700 transition-all shadow-lg shadow-blue-200"
+                  >
+                    Upgrade Now - $9.99/mo
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Export Hub Modal */}
       <AnimatePresence>

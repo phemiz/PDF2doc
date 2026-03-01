@@ -3,7 +3,6 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from 'module';
-import Stripe from 'stripe';
 import { google } from 'googleapis';
 
 const require = createRequire(import.meta.url);
@@ -11,18 +10,6 @@ const pdf = require('pdf-parse');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-let stripeClient: Stripe | null = null;
-export function getStripe(): Stripe {
-  if (!stripeClient) {
-    const key = process.env.STRIPE_SECRET_KEY;
-    if (!key) {
-      throw new Error('STRIPE_SECRET_KEY environment variable is required');
-    }
-    stripeClient = new Stripe(key);
-  }
-  return stripeClient;
-}
 
 async function startServer() {
   const app = express();
@@ -79,36 +66,55 @@ async function startServer() {
 
   app.post("/api/create-checkout-session", async (req, res) => {
     try {
-      const stripe = getStripe();
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ['card'],
-        line_items: [
-          {
-            price_data: {
-              currency: 'usd',
-              product_data: {
-                name: 'PDF2doc Pro',
-                description: 'Unlock batch processing and cloud sync',
-              },
-              unit_amount: 999, // $9.99
-            },
-            quantity: 1,
-          },
-        ],
-        mode: 'payment',
-        success_url: `${process.env.APP_URL || req.headers.origin}/?success=true&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.APP_URL || req.headers.origin}/?canceled=true`,
+      const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+      if (!paystackSecret) {
+        throw new Error('PAYSTACK_SECRET_KEY environment variable is required');
+      }
+
+      const email = req.body.email || 'guest@pdf2doc.com';
+      const amount = 99900; // 999 NGN in kobo
+
+      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+      const host = req.headers['x-forwarded-host'] || req.get('host');
+      const baseUrl = process.env.APP_URL || `${protocol}://${host}`;
+
+      const response = await fetch('https://api.paystack.co/transaction/initialize', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${paystackSecret}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: email,
+          amount: amount,
+          currency: 'NGN',
+          callback_url: `${baseUrl}/?success=true`,
+          metadata: {
+            cancel_action: `${baseUrl}/?canceled=true`
+          }
+        }),
       });
-      res.json({ id: session.id, url: session.url });
+
+      const data = await response.json();
+      if (data.status) {
+        res.json({ url: data.data.authorization_url });
+      } else {
+        throw new Error(data.message || 'Failed to initialize Paystack transaction');
+      }
     } catch (error: any) {
-      console.error("Stripe error:", error);
+      console.error("Paystack error:", error);
       res.status(500).json({ error: error.message });
     }
   });
 
   // Google Drive OAuth
   function getGoogleOAuthClient(req: express.Request) {
-    const redirectUri = `${process.env.APP_URL || req.headers.origin}/api/auth/google/callback`;
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.headers['x-forwarded-host'] || req.get('host');
+    const redirectUri = process.env.APP_URL 
+      ? `${process.env.APP_URL}/api/auth/google/callback`
+      : `${protocol}://${host}/api/auth/google/callback`;
+      
     return new google.auth.OAuth2(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
@@ -121,7 +127,11 @@ async function startServer() {
       const oauth2Client = getGoogleOAuthClient(req);
       const url = oauth2Client.generateAuthUrl({
         access_type: 'offline',
-        scope: ['https://www.googleapis.com/auth/drive.file'],
+        scope: [
+          'https://www.googleapis.com/auth/drive.file',
+          'https://www.googleapis.com/auth/userinfo.email',
+          'https://www.googleapis.com/auth/userinfo.profile'
+        ],
       });
       res.json({ url });
     } catch (error: any) {
@@ -135,12 +145,23 @@ async function startServer() {
       const oauth2Client = getGoogleOAuthClient(req);
       const { tokens } = await oauth2Client.getToken(code as string);
       
+      oauth2Client.setCredentials(tokens);
+      const oauth2 = google.oauth2({
+        auth: oauth2Client,
+        version: 'v2'
+      });
+      const userInfo = await oauth2.userinfo.get();
+      
       res.send(`
         <html>
           <body>
             <script>
               if (window.opener) {
-                window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS', tokens: ${JSON.stringify(tokens)} }, '*');
+                window.opener.postMessage({ 
+                  type: 'GOOGLE_AUTH_SUCCESS', 
+                  tokens: ${JSON.stringify(tokens)},
+                  user: ${JSON.stringify(userInfo.data)}
+                }, '*');
                 window.close();
               } else {
                 window.location.href = '/';
