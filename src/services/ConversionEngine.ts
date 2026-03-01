@@ -212,14 +212,121 @@ export class ConversionEngine {
       config: {
         systemInstruction: "You are a highly accurate document conversion engine. Your ONLY task is to extract the exact text, layout, and structure from the provided document and format it as JSON. DO NOT hallucinate, summarize, or solve any problems. Extract the text EXACTLY as it appears in the document.",
         responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            header: {
+              type: Type.OBJECT,
+              properties: {
+                text: { type: Type.STRING },
+                style: {
+                  type: Type.OBJECT,
+                  properties: {
+                    fontSize: { type: Type.NUMBER },
+                    color: { type: Type.STRING },
+                    alignment: { type: Type.STRING }
+                  }
+                }
+              }
+            },
+            footer: {
+              type: Type.OBJECT,
+              properties: {
+                text: { type: Type.STRING },
+                pageNumber: { type: Type.BOOLEAN },
+                style: {
+                  type: Type.OBJECT,
+                  properties: {
+                    fontSize: { type: Type.NUMBER },
+                    color: { type: Type.STRING },
+                    alignment: { type: Type.STRING }
+                  }
+                }
+              }
+            },
+            columns: { type: Type.NUMBER },
+            paragraphs: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  text: { type: Type.STRING },
+                  style: {
+                    type: Type.OBJECT,
+                    properties: {
+                      fontFamily: { type: Type.STRING },
+                      fontSize: { type: Type.NUMBER },
+                      color: { type: Type.STRING },
+                      alignment: { type: Type.STRING },
+                      isBold: { type: Type.BOOLEAN },
+                      isItalic: { type: Type.BOOLEAN },
+                      underline: { type: Type.BOOLEAN },
+                      strike: { type: Type.BOOLEAN }
+                    }
+                  }
+                }
+              }
+            },
+            tables: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  rows: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING }
+                    }
+                  },
+                  style: {
+                    type: Type.OBJECT,
+                    properties: {
+                      border: { type: Type.STRING },
+                      cellPadding: { type: Type.STRING }
+                    }
+                  }
+                }
+              }
+            },
+            images: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  alt: { type: Type.STRING },
+                  placement: { type: Type.STRING },
+                  wrap: { type: Type.STRING },
+                  caption: { type: Type.STRING }
+                }
+              }
+            }
+          }
+        },
         temperature: 0.1,
       }
     });
 
     try {
-      const text = response.text || '{}';
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      const cleanJson = jsonMatch ? jsonMatch[0] : text;
+      let text = response.text || '{}';
+      text = text.trim();
+      
+      // Remove markdown code blocks if present
+      if (text.startsWith('```json')) {
+        text = text.replace(/^```json\n?/, '').replace(/\n?```$/, '');
+      } else if (text.startsWith('```')) {
+        text = text.replace(/^```\n?/, '').replace(/\n?```$/, '');
+      }
+      
+      // Find the first { and last } to extract the JSON object
+      const firstBrace = text.indexOf('{');
+      const lastBrace = text.lastIndexOf('}');
+      let cleanJson = text;
+      
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        cleanJson = text.substring(firstBrace, lastBrace + 1);
+      }
+      
       const parsed = JSON.parse(cleanJson);
       
       // Validation: Ensure paragraphs exist if we have text
