@@ -1080,21 +1080,26 @@ export default function App() {
                           referrerPolicy="no-referrer"
                         />
                       ) : (
-                        <div className="w-full h-full relative flex flex-col items-center justify-center bg-slate-100 p-6 text-center">
-                          <FileCode size={48} className="text-slate-400 mb-4" />
-                          <h3 className="text-lg font-bold text-slate-700 mb-2">PDF Document</h3>
-                          <p className="text-sm text-slate-500 mb-6 max-w-xs">
-                            Direct PDF preview is disabled in this environment. Click below to view the original file.
-                          </p>
-                          <a 
-                            href={activeFileUrl} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="bg-white px-6 py-3 rounded-xl text-sm font-bold text-blue-600 shadow-sm border border-slate-200 hover:bg-slate-50 hover:shadow-md transition-all flex items-center gap-2"
-                          >
-                            <Maximize2 size={16} />
-                            Open Original PDF
-                          </a>
+                        <div className="w-full h-full relative flex flex-col items-center justify-center bg-slate-100 p-6 text-center overflow-hidden">
+                          <iframe src={`${activeFileUrl}#toolbar=0&navpanes=0&scrollbar=0`} className="w-full h-full absolute inset-0 z-0 opacity-40 pointer-events-none" title="PDF Preview" />
+                          <div className="z-10 bg-white/95 backdrop-blur-md p-8 rounded-3xl shadow-2xl border border-slate-200/50 flex flex-col items-center max-w-sm transform transition-all hover:scale-105">
+                            <div className="bg-blue-50 p-4 rounded-full mb-4">
+                              <FileCode size={40} className="text-blue-500" />
+                            </div>
+                            <h3 className="text-xl font-bold text-slate-800 mb-2">PDF Document</h3>
+                            <p className="text-sm text-slate-500 mb-8 font-medium leading-relaxed">
+                              Direct PDF preview is disabled in this environment. Click below to view the original file.
+                            </p>
+                            <a 
+                              href={activeFileUrl} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="w-full bg-blue-600 px-6 py-3.5 rounded-xl text-sm font-bold text-white shadow-lg shadow-blue-200 hover:bg-blue-700 hover:shadow-xl hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                            >
+                              <Maximize2 size={18} />
+                              Open Original PDF
+                            </a>
+                          </div>
                         </div>
                       )}
                     </div>

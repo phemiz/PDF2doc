@@ -1,6 +1,7 @@
 import { PDFDocument, rgb } from 'pdf-lib';
 import { Document, Packer, Paragraph, TextRun, AlignmentType, Header, Footer, PageNumber, Table, TableRow, TableCell, WidthType, BorderStyle, ImageRun, TextWrappingType, TextWrappingSide } from 'docx';
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
+import { jsonrepair } from 'jsonrepair';
 import JSZip from 'jszip';
 
 export enum ConversionMode {
@@ -134,12 +135,11 @@ export class ConversionEngine {
   }
 
   static async convertBatch(files: File[], options: ConversionOptions): Promise<ConversionResult[]> {
-    const results: ConversionResult[] = [];
-    for (const file of files) {
+    const promises = files.map(async (file) => {
       const result = await this.pdfToDocx(file, options);
-      results.push({ ...result, id: Math.random().toString(36).substr(2, 9) });
-    }
-    return results;
+      return { ...result, id: Math.random().toString(36).substr(2, 9) };
+    });
+    return Promise.all(promises);
   }
 
   private static async fileToBase64(file: File): Promise<string> {
@@ -159,6 +159,85 @@ export class ConversionEngine {
    * Supports both PDF and Images
    */
   static async analyzeLayoutOnline(file: File, options?: ConversionOptions): Promise<any> {
+    if (file.type === 'application/pdf') {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdfDoc = await PDFDocument.load(arrayBuffer);
+        const pageCount = pdfDoc.getPageCount();
+        
+        // If the document is large (e.g., > 2 pages), split it to avoid AI token limits
+        if (pageCount > 2) {
+          console.log(`Large PDF detected (${pageCount} pages). Splitting into chunks to preserve structure...`);
+          const chunks: File[] = [];
+          const chunkSize = 2; // Process 2 pages at a time
+          
+          for (let i = 0; i < pageCount; i += chunkSize) {
+            const newPdf = await PDFDocument.create();
+            const pageIndices = [];
+            for (let j = i; j < Math.min(i + chunkSize, pageCount); j++) {
+              pageIndices.push(j);
+            }
+            
+            const copiedPages = await newPdf.copyPages(pdfDoc, pageIndices);
+            copiedPages.forEach(page => newPdf.addPage(page));
+            
+            const pdfBytes = await newPdf.save();
+            const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+            const chunkFile = new File([blob], `${file.name}_part_${Math.floor(i/chunkSize) + 1}.pdf`, { type: 'application/pdf' });
+            chunks.push(chunkFile);
+          }
+          
+          console.log(`Split into ${chunks.length} chunks. Processing sequentially...`);
+          
+          let combinedParagraphs: any[] = [];
+          let combinedTables: any[] = [];
+          let combinedImages: any[] = [];
+          let header: any = null;
+          let footer: any = null;
+          let columns = 1;
+          
+          for (let i = 0; i < chunks.length; i++) {
+            console.log(`Processing chunk ${i + 1}/${chunks.length}...`);
+            const chunkResult = await this.processSingleFileOnline(chunks[i], options);
+            
+            if (chunkResult.paragraphs && Array.isArray(chunkResult.paragraphs)) {
+              combinedParagraphs = combinedParagraphs.concat(chunkResult.paragraphs);
+            }
+            if (chunkResult.tables && Array.isArray(chunkResult.tables)) {
+              combinedTables = combinedTables.concat(chunkResult.tables);
+            }
+            if (chunkResult.images && Array.isArray(chunkResult.images)) {
+              combinedImages = combinedImages.concat(chunkResult.images);
+            }
+            if (!header && chunkResult.header?.text) header = chunkResult.header;
+            if (!footer && chunkResult.footer?.text) footer = chunkResult.footer;
+            if (chunkResult.columns > columns) columns = chunkResult.columns;
+            
+            // Add a small delay between chunks to avoid rate limits
+            if (i < chunks.length - 1) {
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+          }
+          
+          return {
+            header: header || { text: "" },
+            footer: footer || { text: "" },
+            columns: columns,
+            paragraphs: combinedParagraphs,
+            tables: combinedTables,
+            images: combinedImages
+          };
+        }
+      } catch (e) {
+        console.error("Error splitting PDF, falling back to single processing:", e);
+      }
+    }
+    
+    // Fallback for non-PDFs or small PDFs
+    return this.processSingleFileOnline(file, options);
+  }
+
+  private static async processSingleFileOnline(file: File, options?: ConversionOptions): Promise<any> {
     const ai = this.getAI();
     const base64Data = await this.fileToBase64(file);
     const mimeType = file.type;
@@ -180,6 +259,9 @@ export class ConversionEngine {
       5. If it's an image or scanned document, perform high-accuracy OCR to extract all text while maintaining its visual position and grouping. Ignore any hidden or garbled text layers.
       6. Detect the number of columns (integer) and column spacing if possible.
       7. For images, provide an alt text and suggest a placement (left/right/center) and wrapping style (square/tight/through).
+      8. LANGUAGE & PUNCTUATION: You MUST extract the text in its ORIGINAL language. Do NOT translate the text. You MUST preserve all punctuation, including long sequences of dots or lines (e.g., "..........." or "___________") exactly as they appear in the original document.
+      9. HEADERS & FOOTERS: ONLY extract actual repeating document headers or footers (like page numbers, dates, or small titles at the very top/bottom margins). DO NOT put main body text, paragraphs, or the entire document content into the header or footer fields. If there is no clear header/footer, leave them empty.
+      10. FORMS AND BLANKS: If the document is a form, you MUST preserve all blank spaces, underscores, and dotted lines exactly as they appear (e.g., "Name: ___________________").
       
       Return a JSON object with the following structure:
       {
@@ -193,7 +275,7 @@ export class ConversionEngine {
     `;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.1-pro-preview",
+      model: "gemini-3-flash-preview",
       contents: [
         {
           parts: [
@@ -210,7 +292,7 @@ export class ConversionEngine {
         },
       ],
       config: {
-        systemInstruction: "You are a highly accurate document conversion engine. Your ONLY task is to extract the exact text, layout, and structure from the provided document and format it as JSON. DO NOT hallucinate, summarize, or solve any problems. Extract the text EXACTLY as it appears in the document.",
+        systemInstruction: "You are a highly accurate document conversion engine. Your ONLY task is to extract the exact text, layout, and structure from the provided document and format it as JSON. DO NOT hallucinate, summarize, translate, or solve any problems. Extract the text EXACTLY as it appears in the document, in its original language, preserving all punctuation and formatting marks (like dots and underscores).",
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -304,6 +386,8 @@ export class ConversionEngine {
           }
         },
         temperature: 0.1,
+        maxOutputTokens: 8192,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
       }
     });
 
@@ -325,22 +409,50 @@ export class ConversionEngine {
       
       if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
         cleanJson = text.substring(firstBrace, lastBrace + 1);
+      } else if (firstBrace !== -1 && lastBrace === -1) {
+        console.warn("AI response appears truncated. Attempting to repair JSON...");
+        cleanJson = text.substring(firstBrace);
       }
       
-      const parsed = JSON.parse(cleanJson);
-      
-      // Validation: Ensure paragraphs exist if we have text
-      if (!parsed.paragraphs || parsed.paragraphs.length === 0) {
-        console.warn("AI returned empty paragraphs, attempting to reconstruct from raw text");
-        const rawText = text.replace(/\{[\s\S]*\}/, '').trim();
-        if (rawText) {
-          parsed.paragraphs = rawText.split('\n\n').map((t: string) => ({
-            text: t.trim(),
-            style: { fontFamily: 'Arial', fontSize: 11 }
-          }));
-        }
+      let parsed;
+      try {
+        parsed = JSON.parse(cleanJson);
+      } catch (parseError) {
+        console.warn("Initial JSON parse failed, attempting jsonrepair...", parseError);
+        const repairedJson = jsonrepair(cleanJson);
+        parsed = JSON.parse(repairedJson);
       }
       
+      // Sanitize header and footer to prevent hallucinated body text
+      let hallucinatedBodyText = '';
+      if (parsed.header && parsed.header.text && parsed.header.text.length > 200) {
+        console.warn("Header text too long, treating as hallucinated body text");
+        hallucinatedBodyText += parsed.header.text + '\n\n';
+        parsed.header.text = '';
+      }
+      if (parsed.footer && parsed.footer.text && parsed.footer.text.length > 200) {
+        console.warn("Footer text too long, treating as hallucinated body text");
+        hallucinatedBodyText += parsed.footer.text + '\n\n';
+        parsed.footer.text = '';
+      }
+
+      // Validation: Ensure paragraphs exist
+      if (!parsed.paragraphs || !Array.isArray(parsed.paragraphs)) {
+        parsed.paragraphs = [];
+      }
+
+      if (hallucinatedBodyText.trim()) {
+        const recoveredParagraphs = hallucinatedBodyText.trim().split('\n\n').map((t: string) => ({
+          text: t.trim(),
+          style: { fontFamily: 'Arial', fontSize: 11 }
+        }));
+        parsed.paragraphs = [...recoveredParagraphs, ...parsed.paragraphs];
+      }
+
+      if (parsed.paragraphs.length === 0) {
+        console.warn("AI returned empty paragraphs after sanitization");
+      }
+
       return parsed;
     } catch (e: any) {
       console.error("Failed to parse AI response", e);
@@ -423,7 +535,11 @@ export class ConversionEngine {
     const fileName = file.name;
 
     // Render Header
-    if (analysis.header) {
+    if (analysis.header && analysis.header.text && analysis.header.text.length > 150) {
+      // If header is too long, it's likely a hallucination or misclassified body text.
+      analysis.header.text = '';
+    }
+    if (analysis.header && analysis.header.text && analysis.header.text.trim() !== '') {
       htmlContent += `<div style="border-bottom: 1px solid #e2e8f0; margin-bottom: 20px; padding-bottom: 5px; text-align: ${analysis.header.style?.alignment || 'center'}; color: ${analysis.header.style?.color || '#94a3b8'}; font-size: ${analysis.header.style?.fontSize || 10}px;">${analysis.header.text}</div>`;
     }
 
@@ -482,8 +598,11 @@ export class ConversionEngine {
     }
 
     // Render Footer
-    if (analysis.footer) {
-      htmlContent += `<div style="border-top: 1px solid #e2e8f0; margin-top: 40px; padding-top: 5px; text-align: ${analysis.footer.style.alignment}; color: ${analysis.footer.style.color}; font-size: ${analysis.footer.style.fontSize}px;">${analysis.footer.text} ${analysis.footer.pageNumber ? '| Page 1' : ''}</div>`;
+    if (analysis.footer && analysis.footer.text && analysis.footer.text.length > 150) {
+      analysis.footer.text = '';
+    }
+    if (analysis.footer && (analysis.footer.text?.trim() !== '' || analysis.footer.pageNumber)) {
+      htmlContent += `<div style="border-top: 1px solid #e2e8f0; margin-top: 40px; padding-top: 5px; text-align: ${analysis.footer.style?.alignment || 'center'}; color: ${analysis.footer.style?.color || '#94a3b8'}; font-size: ${analysis.footer.style?.fontSize || 10}px;">${analysis.footer.text || ''} ${analysis.footer.pageNumber ? '| Page 1' : ''}</div>`;
     }
 
     if (mode === ConversionMode.ONLINE) {
