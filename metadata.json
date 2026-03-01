@@ -1,0 +1,5 @@
+{
+  "name": "PDF2doc",
+  "description": "High-fidelity PDF to DOCX converter with layout preservation and rich-text editing.",
+  "requestFramePermissions": []
+}
